@@ -1,40 +1,24 @@
-# ============================================================
-# docker-compose.yml - Frontend Despachos
-# Sirve la app React usando Nginx
-# En producción (EC2), el backend corre en otra instancia
-# ============================================================
 
 version: "3.9"
 
 services:
 
-  # ----------------------------------------------------------
-  # Servicio: Frontend React (servido por Nginx)
-  # ----------------------------------------------------------
   frontend:
     build:
       context: .
       dockerfile: Dockerfile
       args:
-        # URL del backend: se pasa en tiempo de build
-        # En EC2 usar la IP privada del backend o dominio interno
+
         VITE_API_URL: ${VITE_API_URL:-http://localhost:8081}
     container_name: despachos-frontend
     restart: unless-stopped
     ports:
-      # Puerto 80 del contenedor mapeado al 80 del host (EC2)
+
       - "80:80"
     environment:
       - VITE_API_URL=${VITE_API_URL:-http://localhost:8081}
     networks:
       - frontend-net
-
-# ----------------------------------------------------------
-# Nota sobre volúmenes en el Frontend:
-# El frontend sirve archivos estáticos compilados (dist/).
-# No requiere volúmenes de datos persistentes.
-# Los logs de Nginx son efímeros por diseño.
-# ----------------------------------------------------------
 
 networks:
   frontend-net:
