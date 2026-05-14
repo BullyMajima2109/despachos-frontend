@@ -1,0 +1,116 @@
+# ============================================================
+# .github/workflows/deploy-frontend.yml
+# Pipeline CI/CD - Frontend Despachos
+#
+# Flujo: push a rama "deploy" →
+#   1. Checkout del código
+#   2. Build de imagen Docker (multi-stage con Nginx)
+#   3. Push a AWS ECR
+#   4. SSH a EC2 → pull imagen → restart contenedor
+#
+# Secrets requeridos en GitHub (Settings → Secrets → Actions):
+#   AWS_ACCESS_KEY_ID        : Credenciales AWS
+#   AWS_SECRET_ACCESS_KEY    : Credenciales AWS
+#   AWS_SESSION_TOKEN        : Token de sesión (AWS Academy)
+#   AWS_REGION               : Región (ej: us-east-1)
+#   ECR_REGISTRY             : URL del registry ECR
+#   ECR_REPOSITORY_FRONTEND  : Nombre del repo ECR (ej: despachos-frontend)
+#   EC2_FRONTEND_HOST        : IP pública de la instancia EC2 frontend
+#   EC2_SSH_KEY              : Contenido de la clave privada .pem
+#   EC2_USER                 : Usuario SSH (ej: ec2-user)
+#   VITE_API_URL             : URL del backend (IP privada EC2 backend)
+# ============================================================
+
+name: CI/CD Frontend Despachos
+
+# Trigger: solo se activa con push a la rama "deploy"
+on:
+  push:
+    branches:
+      - deploy
+
+jobs:
+  build-push-deploy:
+    name: Build → Push ECR → Deploy EC2
+    runs-on: ubuntu-latest
+
+    steps:
+      # ----------------------------------------------------------
+      # Paso 1: Checkout del código fuente
+      # ----------------------------------------------------------
+      - name: Checkout código fuente
+        uses: actions/checkout@v4
+
+      # ----------------------------------------------------------
+      # Paso 2: Configurar credenciales AWS
+      # ----------------------------------------------------------
+      - name: Configurar credenciales AWS
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      # ----------------------------------------------------------
+      # Paso 3: Login a Amazon ECR
+      # ----------------------------------------------------------
+      - name: Login a Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      # ----------------------------------------------------------
+      # Paso 4: Build de la imagen Docker y push a ECR
+      # VITE_API_URL se pasa como build-arg para que Vite lo embeba
+      # en el bundle estático durante la compilación
+      # ----------------------------------------------------------
+      - name: Build y Push imagen a ECR
+        env:
+          ECR_REGISTRY: ${{ secrets.ECR_REGISTRY }}
+          ECR_REPOSITORY: ${{ secrets.ECR_REPOSITORY_FRONTEND }}
+          IMAGE_TAG: ${{ github.sha }}
+          VITE_API_URL: ${{ secrets.VITE_API_URL }}
+        run: |
+          echo "Construyendo imagen: $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG"
+          docker build \
+            --build-arg VITE_API_URL=$VITE_API_URL \
+            -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .
+          docker tag $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG $ECR_REGISTRY/$ECR_REPOSITORY:latest
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:latest
+          echo "Imagen publicada exitosamente"
+
+      # ----------------------------------------------------------
+      # Paso 5: Deploy en instancia EC2 Frontend vía SSH
+      # Solo el Frontend está en subred pública (accesible desde Internet)
+      # ----------------------------------------------------------
+      - name: Deploy en EC2 (Frontend)
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.EC2_FRONTEND_HOST }}
+          username: ${{ secrets.EC2_USER }}
+          key: ${{ secrets.EC2_SSH_KEY }}
+          script: |
+            # Autenticar Docker con ECR desde la instancia EC2
+            aws ecr get-login-password --region ${{ secrets.AWS_REGION }} | \
+              docker login --username AWS --password-stdin ${{ secrets.ECR_REGISTRY }}
+
+            # Detener y eliminar el contenedor anterior si existe
+            docker stop despachos-frontend || true
+            docker rm despachos-frontend || true
+
+            # Descargar la imagen más reciente
+            docker pull ${{ secrets.ECR_REGISTRY }}/${{ secrets.ECR_REPOSITORY_FRONTEND }}:latest
+
+            # Iniciar el nuevo contenedor
+            # Puerto 80 expuesto hacia Internet (Security Group debe permitir HTTP)
+            docker run -d \
+              --name despachos-frontend \
+              --restart unless-stopped \
+              -p 80:80 \
+              ${{ secrets.ECR_REGISTRY }}/${{ secrets.ECR_REPOSITORY_FRONTEND }}:latest
+
+            # Limpiar imágenes antiguas
+            docker image prune -f
+
+            echo "Deploy frontend completado exitosamente"
