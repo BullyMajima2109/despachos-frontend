@@ -62,7 +62,7 @@ RUN chown -R nginx:nginx /usr/share/nginx/html && \
 USER nginx
 
 # El frontend corre en puerto 80 (mapeado externamente)
-EXPOSE 80
+EXPOSE 8080
 
 # Nginx corre en foreground
 CMD ["nginx", "-g", "daemon off;"]
